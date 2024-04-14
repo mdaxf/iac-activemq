@@ -24,10 +24,15 @@ import (
 	"github.com/mdaxf/signalrsrv/signalr"
 )
 
-var AppComponentName string = "iac-activemq"
-var AppVersion string = "1.0.0"
-var AppDescription string = "IAC ActiveMQ Integration"
-var AppID string = ""
+var (
+	AppComponentName    string = "iac-activemq"
+	AppVersion          string = "1.0.0"
+	AppDescription      string = "IAC ActiveMQ Integration"
+	AppID               string = ""
+	APPDB               *sql.DB
+	APPDocDB            *documents.DocDB
+	APPMessageBusClient signalr.Client
+)
 
 func main() {
 	startTime := time.Now()
@@ -50,11 +55,13 @@ func main() {
 	if DB == nil {
 		ilog.Error("Database connection error")
 	}
+	APPDB = DB
 
 	docDB := initializedDocuments(ilog, gconfig)
 	if docDB == nil {
 		ilog.Error("MongoDB connection error!")
 	}
+	APPDocDB = docDB
 
 	IACMessageBusClient, err := iacmb.Connect(gconfig.SingalRConfig)
 	if err != nil {
@@ -62,6 +69,7 @@ func main() {
 	} else {
 		ilog.Debug(fmt.Sprintf("IAC Message Bus: %v", IACMessageBusClient))
 	}
+	APPMessageBusClient = IACMessageBusClient
 
 	if callback_mgr.CallBackMap["TranCode_Execute"] == nil {
 		ilog.Debug("Register the trancode execution interface")
@@ -77,7 +85,7 @@ func main() {
 	//waitForTerminationSignal()
 }
 
-func HeartBeat(ilog logger.Log, gconfig *config.GlobalConfig) {
+func HeartBeat(ilog logger.Log, gconfig *config.GlobalConfig, DB *sql.DB, DocDB *documents.DocDB, IACMessageBusClient signalr.Client) {
 	ilog.Debug("Start HeartBeat for iac-activemq application with appid: " + AppID)
 	appHeartBeatUrl := com.ConverttoString(gconfig.AppServer["url"]) + "/IACComponents/heartbeat"
 	ilog.Debug("HeartBeat URL: " + appHeartBeatUrl)

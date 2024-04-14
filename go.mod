@@ -3,6 +3,8 @@ module github.com/mdaxf/iac-activemq
 go 1.21.4
 
 require (
+	github.com/google/uuid v1.4.0
+	github.com/mdaxf/iac v0.0.0-20240413235338-fa6857a1850a
 	github.com/mdaxf/signalrsrv v0.0.0-20231208201552-dfbb574e5c80
 )
 
@@ -28,7 +30,6 @@ require (
 	github.com/golang-sql/sqlexp v0.1.0 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
-	github.com/google/uuid v1.4.0 // indirect
 	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect

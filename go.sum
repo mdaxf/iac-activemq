@@ -154,8 +154,8 @@ github.com/leodido/go-urn v1.2.4/go.mod h1:7ZrI8mTSeBSHl/UaRyKQW1qZeMgak41ANeCNa
 github.com/mattn/go-isatty v0.0.12/go.mod h1:cbi8OIDigv2wuxKPP5vlRcQ1OAZbq2CE4Kysco4FUpU=
 github.com/mattn/go-isatty v0.0.19 h1:JITubQf0MOLdlGRuRq+jtsDlekdYPia9ZFsB8h/APPA=
 github.com/mattn/go-isatty v0.0.19/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
-github.com/mdaxf/iac v0.0.0-20240413192247-dec91f9a6065 h1:WFlGNlJVLamd/QlhHGffaqi7c+rbquGfwIuuhU+gwK4=
-github.com/mdaxf/iac v0.0.0-20240413192247-dec91f9a6065/go.mod h1:YWuZ2mdN5TqL21/9XdzVE1hFbwcPzIVupisFOltENdc=
+github.com/mdaxf/iac v0.0.0-20240413235338-fa6857a1850a h1:yjl4RlzmOlUGfmB3nfx579HPqNcP87IXYukQLy8YIDQ=
+github.com/mdaxf/iac v0.0.0-20240413235338-fa6857a1850a/go.mod h1:YWuZ2mdN5TqL21/9XdzVE1hFbwcPzIVupisFOltENdc=
 github.com/mdaxf/signalrsrv v0.0.0-20231208201552-dfbb574e5c80 h1:MpSq1JlNFL4JvsrmXZUXFEu75JT8RuuO96H8YNCBPCE=
 github.com/mdaxf/signalrsrv v0.0.0-20231208201552-dfbb574e5c80/go.mod h1:fNrlNZ8Bg6fSjklTMu5c3+bS/rKzv/jWUHdYWxSzhk0=
 github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
