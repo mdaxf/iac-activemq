@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -27,22 +30,28 @@ import (
 )
 
 var (
-	AppComponentName    string = "iac-activemq"
-	AppVersion          string = "1.0.0"
-	AppDescription      string = "IAC ActiveMQ Component"
-	AppID               string = ""
-	APPDB               *sql.DB
-	APPDocDB            *documents.DocDB
-	APPMessageBusClient signalr.Client
-	ActiveMQs           []*activemq.ActiveMQ
+	nodedata      map[string]interface{}
+	nodecomponent map[string]interface{}
+	monitorPort   int
+	monitorServer *http.Server
+	ActiveMQs     []*activemq.ActiveMQ
 )
 
 func main() {
 	startTime := time.Now()
 	ActiveMQs = make([]*activemq.ActiveMQ, 0)
 	var wg sync.WaitGroup
-	gconfig, err := config.LoadGlobalConfig()
+	nodecomponent = make(map[string]interface{})
 
+	gconfig, err := config.LoadGlobalConfig()
+	nodedata = make(map[string]interface{})
+	nodedata["Name"] = "iac-activemq"
+	nodedata["AppID"] = uuid.New().String()
+	nodedata["Description"] = "IAC ActiveMQ Service"
+	nodedata["Type"] = "ActiveMQ"
+	nodedata["Version"] = "1.0.0"
+	nodedata["Status"] = "Running"
+	nodedata["StartTime"] = time.Now().UTC()
 	if err != nil {
 		log.Fatalf("Failed to load global configuration: %v", err)
 		//ilog.Error(fmt.Sprintf("Failed to load global configuration: %v", err))
@@ -51,21 +60,17 @@ func main() {
 
 	ilog := logger.Log{ModuleName: logger.Framework, User: "System", ControllerName: "iac-activemq"}
 
-	AppID = uuid.New().String()
-
-	ilog.Debug("Start the iac-activemq application with appid: " + AppID)
+	ilog.Debug("Start the iac-activemq application with appid: " + nodedata["AppID"].(string))
 
 	DB := initializeDatabase(ilog, gconfig)
 	if DB == nil {
 		ilog.Error("Database connection error")
 	}
-	APPDB = DB
 
 	docDB := initializedDocuments(ilog, gconfig)
 	if docDB == nil {
 		ilog.Error("MongoDB connection error!")
 	}
-	APPDocDB = docDB
 
 	IACMessageBusClient, err := iacmb.Connect(gconfig.SingalRConfig)
 	if err != nil {
@@ -73,7 +78,10 @@ func main() {
 	} else {
 		ilog.Debug(fmt.Sprintf("IAC Message Bus: %v", IACMessageBusClient))
 	}
-	APPMessageBusClient = IACMessageBusClient
+
+	nodecomponent["DB"] = DB
+	nodecomponent["DocDB"] = docDB
+	nodecomponent["IACMessageBusClient"] = IACMessageBusClient
 
 	if callback_mgr.CallBackMap["TranCode_Execute"] == nil {
 		ilog.Debug("Register the trancode execution interface")
@@ -88,6 +96,12 @@ func main() {
 		initializeActiveMQConnection(gconfig, ilog, DB, docDB, IACMessageBusClient)
 	}()
 
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		startMonitorServer(ilog, gconfig)
+	}()
+
 	// Start the HeartBeat
 	wg.Add(1)
 	go func() {
@@ -100,28 +114,22 @@ func main() {
 
 	wg.Wait()
 
-	waitForTerminationSignal(ilog, gconfig)
-
 	elapsed := time.Since(startTime)
 	ilog.PerformanceWithDuration("iac-mqtt.main", elapsed)
+
+	waitForTerminationSignal(ilog, gconfig)
 }
 
 func HeartBeat(ilog logger.Log, gconfig *config.GlobalConfig, DB *sql.DB, DocDB *documents.DocDB, IACMessageBusClient signalr.Client) {
-	ilog.Debug("Start HeartBeat for iac-activemq application with appid: " + AppID)
+	ilog.Debug("Start HeartBeat for iac-activemq application with appid: " + nodedata["AppID"].(string))
 	appHeartBeatUrl := com.ConverttoString(gconfig.AppServer["url"]) + "/IACComponents/heartbeat"
 	ilog.Debug("HeartBeat URL: " + appHeartBeatUrl)
-	nodedata := make(map[string]interface{})
-	nodedata["Name"] = AppComponentName
-	nodedata["AppID"] = AppID
-	nodedata["Description"] = AppDescription
-	nodedata["Type"] = "ActiveMQ"
-	nodedata["Version"] = "1.0.0"
 
 	result, err := health.CheckNodeHealth(nodedata, DB, DocDB.MongoDBClient, IACMessageBusClient)
 
 	ilog.Debug(fmt.Sprintf("HeartBeat Result: %v", result))
 
-	activemqsresult, err := CheckActiveMQStatus(ilog)
+	activemqsresult, err := CheckServiceStatus(ilog)
 	if err != nil {
 		ilog.Error(fmt.Sprintf("HeartBeat error: %v", err))
 	}
@@ -130,7 +138,7 @@ func HeartBeat(ilog logger.Log, gconfig *config.GlobalConfig, DB *sql.DB, DocDB 
 	data["Node"] = nodedata
 	data["Result"] = result
 	data["ServiceStatus"] = activemqsresult
-	data["time"] = time.Now().UTC()
+	data["timestamp"] = time.Now().UTC()
 	// send the heartbeat to the server
 	headers := make(map[string]string)
 	headers["Content-Type"] = "application/json"
@@ -146,17 +154,30 @@ func HeartBeat(ilog logger.Log, gconfig *config.GlobalConfig, DB *sql.DB, DocDB 
 	ilog.Debug(fmt.Sprintf("HeartBeat post response: %v", response))
 }
 
-func CheckActiveMQStatus(iLog logger.Log) (map[string]interface{}, error) {
+func CheckServiceStatus(iLog logger.Log) (map[string]interface{}, error) {
 	iLog.Debug("Check ActiveMQ Status")
 	result := make(map[string]interface{})
-
+	OKCount := 0
+	UnavailableCount := 0
 	for _, activemqconn := range ActiveMQs {
 		if activemqconn.Conn != nil {
 			result[activemqconn.Config.Host] = true
+			OKCount++
 		} else {
 			result[activemqconn.Config.Host] = false
+			UnavailableCount++
 		}
 	}
+	OverAllStatus := health.StatusOK
+
+	if OKCount == 0 {
+		OverAllStatus = health.StatusUnavailable
+	} else if UnavailableCount > 0 && OKCount > 0 {
+		OverAllStatus = health.StatusPartiallyAvailable
+	} else {
+		OverAllStatus = health.StatusOK
+	}
+	result["OverallStatus"] = OverAllStatus
 	return result, nil
 }
 
@@ -192,14 +213,15 @@ func initializeActiveMQConnection(gconfig *config.GlobalConfig, ilog logger.Log,
 
 	}
 	ilog.Debug(fmt.Sprintf("ActiveMQ Connection configuration: %v", logger.ConvertJson(activemqconfigs)))
-	i := 0
+
 	for _, activemqcfg := range activemqconfigs.ActiveMQs {
 		ilog.Debug(fmt.Sprintf("Single ActiveMQ Connection configuration: %s", logger.ConvertJson(activemqcfg)))
 		activemqconn := activemq.NewActiveMQConnectionExternal(activemqcfg, DocDB, DB, IACMessageBusClient)
 		activemqconn.AppServer = com.ConverttoString(gconfig.AppServer["url"])
 		activemqconn.ApiKey = activemqconfigs.ApiKey
 		ActiveMQs = append(ActiveMQs, activemqconn)
-		i++
+		activemqconn.Subscribes()
+
 	}
 }
 
@@ -208,19 +230,24 @@ func waitForTerminationSignal(ilog logger.Log, gconfig *config.GlobalConfig) {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 	fmt.Println("\nShutting down...")
-	ilog.Debug("Start HeartBeat for iac-activemq application with appid: " + AppID)
+	if nodecomponent["DB"].(*sql.DB) != nil {
+		nodecomponent["DB"].(*sql.DB).Close()
+	}
+
+	if nodecomponent["DocDB"].(*documents.DocDB) != nil {
+		nodecomponent["DocDB"].(*documents.DocDB).MongoDBClient.Disconnect(nil)
+	}
+
+	if nodecomponent["IACMessageBusClient"].(signalr.Client) != nil {
+		nodecomponent["IACMessageBusClient"].(signalr.Client).Stop()
+	}
+	ilog.Debug("Start HeartBeat for iac-activemq application with appid: " + nodedata["AppID"].(string))
 	appHeartBeatUrl := com.ConverttoString(gconfig.AppServer["url"]) + "/IACComponents/close"
 	ilog.Debug("HeartBeat URL: " + appHeartBeatUrl)
-	nodedata := make(map[string]interface{})
-	nodedata["Name"] = AppComponentName
-	nodedata["AppID"] = AppID
-	nodedata["Description"] = AppDescription
-	nodedata["Type"] = "ActiveMQ"
-	nodedata["Version"] = "1.0.0"
 
 	data := make(map[string]interface{})
 	data["Node"] = nodedata
-	data["time"] = time.Now().UTC()
+	data["timestamp"] = time.Now().UTC()
 
 	headers := make(map[string]string)
 	headers["Content-Type"] = "application/json"
@@ -230,6 +257,23 @@ func waitForTerminationSignal(ilog logger.Log, gconfig *config.GlobalConfig) {
 
 	if err != nil {
 		ilog.Error(fmt.Sprintf("HeartBeat error: %v", err))
+	}
+	go func() {
+		if nodecomponent["DB"].(*sql.DB) != nil {
+			nodecomponent["DB"].(*sql.DB).Close()
+		}
+
+		if nodecomponent["DocDB"].(*documents.DocDB) != nil {
+			nodecomponent["DocDB"].(*documents.DocDB).MongoDBClient.Disconnect(nil)
+		}
+
+		if nodecomponent["IACMessageBusClient"].(signalr.Client) != nil {
+			nodecomponent["IACMessageBusClient"].(signalr.Client).Stop()
+		}
+	}()
+
+	if monitorServer != nil {
+		monitorServer.Shutdown(context.Background())
 	}
 
 	time.Sleep(2 * time.Second) // Add any cleanup or graceful shutdown logic here
@@ -333,4 +377,94 @@ func initializedDocuments(ilog logger.Log, gconfig *config.GlobalConfig) *docume
 	documents.ConnectDB(DatabaseType, DatabaseConnection, DatabaseName)
 
 	return documents.DocDBCon
+}
+
+func startMonitorServer(ilog logger.Log, gconfig *config.GlobalConfig) {
+	err := error(nil)
+	monitorPort, err = getAvailablePort(8800, 8900)
+	if err != nil {
+		ilog.Error(fmt.Sprintf("Failed to get an available port: %v", err))
+	}
+	ilog.Debug(fmt.Sprintf("Starting monitor server on port %d", monitorPort))
+	nodedata["MonitorPort"] = monitorPort
+	// Start the monitor server
+
+	hip, err := com.GetHostandIPAddress()
+
+	if err != nil {
+		ilog.Error(fmt.Sprintf("Failed to get host and ip address: %v", err))
+	}
+	for key, value := range hip {
+		nodedata[key] = value
+	}
+	if hip["Host"] != nil {
+		nodedata["healthapi"] = fmt.Sprintf("http://%s:%d/health", hip["Host"], monitorPort)
+	}
+
+	monitorServer = &http.Server{Addr: fmt.Sprintf(":%d", monitorPort)}
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Header.Get("Authorization") != "apikey "+gconfig.AppServer["apikey"].(string) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		result, err := health.CheckNodeHealth(nodedata, nodecomponent["DB"].(*sql.DB), nodecomponent["DocDB"].(*documents.DocDB).MongoDBClient, nodecomponent["IACMessageBusClient"].(signalr.Client))
+
+		ilog.Debug(fmt.Sprintf("Health Result: %v", result))
+
+		activemqsresult, err := CheckServiceStatus(ilog)
+		if err != nil {
+			ilog.Error(fmt.Sprintf("HeartBeat error: %v", err))
+		}
+
+		data := make(map[string]interface{})
+		data["Node"] = nodedata
+		data["Result"] = result
+		data["ServiceStatus"] = activemqsresult
+		data["time"] = time.Now().UTC()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(data)
+	})
+	http.HandleFunc("/reloadconfig", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Header.Get("Authorization") != "apikey "+gconfig.AppServer["apikey"].(string) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		ilog.Debug("Reloading configuration - close the connections and reinitialize the components")
+		/*	nodecomponent["DB"].(*sql.DB).Close()
+			nodecomponent["DocDB"].(*documents.DocDB).MongoDBClient.Disconnect(nil)
+			nodecomponent["IACMessageBusClient"].(signalr.Client).Stop()
+		*/
+		initializeActiveMQConnection(gconfig, ilog, nodecomponent["DB"].(*sql.DB), nodecomponent["DocDB"].(*documents.DocDB), nodecomponent["IACMessageBusClient"].(signalr.Client))
+
+		w.Header().Set("Content-Type", "application/json")
+		data := make(map[string]interface{})
+		data["Status"] = "Success"
+		json.NewEncoder(w).Encode(data)
+	})
+	ilog.Debug(fmt.Sprintf("Starting server on port %d", monitorPort))
+	err = monitorServer.ListenAndServe()
+	if err != nil && err != http.ErrServerClosed {
+		ilog.Error(fmt.Sprintf("Failed to start server: %v", err))
+	}
+
+}
+
+func getAvailablePort(minPort, maxPort int) (int, error) {
+	for port := minPort; port <= maxPort; port++ {
+		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err == nil {
+			ln.Close()
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("no available port found in the range %d-%d", minPort, maxPort)
 }
